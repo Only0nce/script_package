@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+# license removed for brevity
+#14032566 PROJECT
+import rospy
+import roslaunch
+import os
+from std_msgs.msg import *
+from state_arduino.msg import MISSION, IO, STATE
+from state_arduino.srv import *
+from move_base_msgs.msg import MoveBaseAction
+import actionlib
+
+class ARDUINO_IO:
+
+    def __init__(self):
+
+        # initialize
+        rospy.init_node("PROJECT", anonymous=True)
+        rospy.loginfo("[CONNECT TO API] connect to api ......." )
+        rospy.loginfo("[PUBLISHED] published ........")
+        self.io_msg = IO()
+        self.mission = MISSION()
+        self.state = STATE()
+        # self.robot_current = "waiting"
+        self.move_base = actionlib.SimpleActionClient("/move_base", MoveBaseAction)
+        self.cmd = IOsRequest()
+        self.buzzers = rospy.ServiceProxy('/Buzzer_cmd', IOs)
+        uuid = roslaunch.rlutil.get_or_generate_uuid(None, False)
+        roslaunch.configure_logging(uuid)
+        
+        # ROSLAUNCH API
+        self.TRANS_A = roslaunch.parent.ROSLaunchParent(uuid, ["/home/only/catkin_ws/src/state_arduino/launch/transA.launch"])
+        self.TRANS_B = roslaunch.parent.ROSLaunchParent(uuid, ["/home/only/catkin_ws/src/state_arduino/launch/transB.launch"])
+        self.TRANS_C = roslaunch.parent.ROSLaunchParent(uuid, ["/home/only/catkin_ws/src/state_arduino/launch/transC.launch"])
+        self.PICK_A = roslaunch.parent.ROSLaunchParent(uuid, ["/home/only/catkin_ws/src/state_arduino/launch/pickA.launch"])
+        self.PICK_B = roslaunch.parent.ROSLaunchParent(uuid, ["/home/only/catkin_ws/src/state_arduino/launch/pickB.launch"])
+        self.PICK_C = roslaunch.parent.ROSLaunchParent(uuid, ["/home/only/catkin_ws/src/state_arduino/launch/pickC.launch"])
+        self.ENTRY = roslaunch.parent.ROSLaunchParent(uuid, ["/home/only/catkin_ws/src/state_arduino/launch/entry.launch"])
+        self.RELEASE = roslaunch.parent.ROSLaunchParent(uuid, ["/home/only/catkin_ws/src/state_arduino/launch/release.launch"])
+        self.BASE = roslaunch.parent.ROSLaunchParent(uuid, ["/home/only/catkin_ws/src/state_arduino/launch/base.launch"])
+
+        # INTERLOCK
+        self.interlock_o = False
+        self.interlock_g = False
+        self.transA_in = False
+        self.transB_in = False
+        self.transC_in = False
+        self.pickA_in = False
+        self.pickB_in = False
+        self.pickC_in = False
+        self.base_in = False
+        self.entry_in = False
+        self.release_in = False
+
+        self.transA = False
+        self.transB = False
+        self.transC = False
+        self.pickA = False
+        self.pickB = False
+        self.pickC = False
+        self.base = False
+        self.entry = False
+        self.release = False
+
+        # STATE IO Session
+        self.buzzer = False
+        self.lift = False
+        self.lim_up = False
+        self.lim_down = False
+        self.sw_green = False
+        self.sw_orange = False
+        self.led = False
+        self.lamp_green = False
+        self.lamp_orange = False
+        self.lamp_white  = False
+        self.emer = False
+
+        # STATE ROBOT Session
+        self.await_ = True
+        self.driving = False
+
+        # ROS Publisher session
+        # self.pub_io = rospy.Publisher("/IO", IO, queue_size=10)
+        self.pub_state = rospy.Publisher("/STATE", STATE, queue_size=10)
+        # self.pub_buzzer = rospy.Publisher("/Buzzer_cmd", String, queue_size=1)
+
+        # ROS Subscriber session
+        self.sub_mission = rospy.Subscriber("/MISSION", MISSION, self.mission_cb)
+        # self.sub_swgreen = rospy.Subscriber("/SW_Green", Bool, self.SW_Green_cb)
+        # self.sub_sworange = rospy.Subscriber("/SW_Orange", Bool, self.SW_Orange_cb)
+        # self.sub_emer = rospy.Subscriber("/emergency", Bool, self.Emer_cb)
+        self.sub_io = rospy.Subscriber("/IO", IO, self.IO_cb)
+
+        # While loop
+        rate = rospy.Rate(1)
+
+        while not rospy.is_shutdown():
+            self.update_state()
+            rate.sleep()
+        rospy.loginfo("[DISCONNECT] disconnect ........")
+        
+    def mission_cb(self, m):
+        # rospy.loginfo(m)
+        if m.BASE == True:
+            self.base = True
+        elif m.PICK_A == True:
+            self.pickA = True
+        elif m.PICK_B == True:
+            self.pickB = True
+        elif m.PICK_C == True:
+            self.pickC = True
+        elif m.TRANS_A == True:
+            self.transA = True
+        elif m.TRANS_B == True:
+            self.transB = True
+        elif m.TRANS_C == True:
+            self.transC = True
+        elif m.ENTRY == True:
+            self.entry = True
+        elif m.RELEASE == True:
+            self.release = True
+            
+    def Emer_cb(self):
+        if  self.emer == True:
+            self.move_base.cancel_goal()
+        else:
+            pass
+        
+            
+    def SW_Orange_cb(self):
+        if self.sw_green == True and self.interlock_o == False and self.emer == False:
+            self.interlock_o = True
+            self.move_base.cancel_goal()
+
+        if self.sw_orange == True and self.interlock_o == True:
+            self.interlock_o = False
+
+    def SW_Green_cb(self):
+        # rospy.loginfo('data receive ' + str(g.data))
+        if self.sw_green == True and self.interlock_g == False and self.emer == False:
+            self.interlock_g = True
+            self.cmd = IOsRequest()
+            self.cmd.CH_1 = True
+            self.buzzers(self.cmd)
+        
+        if self.emer == True and self.interlock_g == True:
+            self.interlock_g = False
+
+    def IO_cb(self, io_):
+        self.buzzer = io_.BUZZER
+        self.lift = io_.LIFT
+        self.emer = io_.EMERGENCY
+        self.lim_up = io_.LIM_UP
+        self.lim_down = io_.LIM_DOWN
+        self.sw_green = io_.SW_GREEN
+        self.sw_orange = io_.SW_ORANGE
+        self.led = io_.LED
+        self.lamp_green = io_.LAMP_GREEN
+        self.lamp_orange = io_.LAMP_ORANGE
+        self.lamp_white  = io_.LAMP_WHITE
+
+    def launch_files(self):
+
+        # roslaunch BASE
+        if self.sw_green == False:
+            while (self.base == True and self.base_in == False):
+                self.base_in = True
+                self.base = False
+                self.await_ = False
+                self.BASE.start()
+                rospy.loginfo("[SCRIPT BASE SUCCESS]")
+                rospy.sleep(3)
+                break
+            while (self.base == False and self.base_in == True):
+                self.base_in = False
+                self.await_ = True
+                self.BASE.shutdown()
+                rospy.loginfo("[SCRIPT BASE SHUTDOWN]")
+                rospy.sleep(3)
+                break
+
+            # roslaunch TRANS_A
+            while (self.transA == True and self.transA_in == False):
+                self.transA_in = True
+                self.transA = False
+                self.await_ = False
+                self.TRANS_A.start()
+                rospy.loginfo("[SCRIPT TRANS_A SUCCESS]")
+                rospy.sleep(3)
+                break
+            while (self.transA == False and self.transA_in == True):
+                self.transA_in = False
+                # self.mission.WAITING = True
+                self.await_ = True
+                self.TRANS_A.shutdown()
+                rospy.loginfo("[SCRIPT TRANS_A SHUTDOWN]")
+                rospy.sleep(3)
+                break
+
+            # roslaunch TRANS_B
+            while (self.transB == True and self.transB_in == False):
+                self.transB_in = True
+                self.transB = False
+                self.await_ = False
+                self.TRANS_B.start()
+                rospy.loginfo("[SCRIPT TRANS_B SUCCESS]")
+                rospy.sleep(3)
+                break
+            while (self.transB == False and self.transB_in == True):
+                self.transB_in = False
+                # self.mission.WAITING = True
+                self.await_ = True
+                self.TRANS_B.shutdown()
+                rospy.loginfo("[SCRIPT TRANS_B SHUTDOWN]")
+                rospy.sleep(3)
+                break
+
+            # roslaunch TRANS_C
+            while (self.transC == True and self.transC_in == False):
+                self.transC_in = True
+                self.transC = False
+                self.await_ = False
+                self.TRANS_C .start()
+                rospy.loginfo("[SCRIPT TRANS_C SUCCESS]")
+                rospy.sleep(3)
+                break
+            while (self.transC == False and self.transC_in == True):
+                self.transC_in = False
+                self.await_ = True
+                # self.mission.WAITING = True
+                self.TRANS_C .shutdown()
+                rospy.loginfo("[SCRIPT TRANS_C SHUTDOWN]")
+                rospy.sleep(3)
+                break
+
+            # roslaunch PICK_A
+            while (self.pickA == True and self.pickA_in == False):
+                self.pickA_in = True
+                self.pickA = False
+                self.await_ = False
+                self.PICK_A.start()
+                rospy.loginfo("[SCRIPT PICK_A SUCCESS]")
+                rospy.sleep(3)
+                break
+            while (self.pickA == False and self.pickA_in == True):
+                self.pickA_in = False
+                # self.mission.WAITING = True
+                self.await_ = True
+                self.PICK_A.shutdown()
+                rospy.loginfo("[SCRIPT PICK_A SHUTDOWN]")
+                rospy.sleep(3)
+                break
+
+            # roslaunch PICK_B
+            while (self.pickB == True and self.pickB_in == False):
+                self.pickB_in = True
+                self.pickB = False
+                self.await_ = False
+                self.PICK_B.start()
+                rospy.loginfo("[SCRIPT PICK_B SUCCESS]")
+                rospy.sleep(3)
+                break
+            while (self.pickB == False and self.pickB_in == True):
+                # self.mission.WAITING = True
+                self.mission.PICK_B = False
+                self.await_ = True
+                self.PICK_B.shutdown()
+                rospy.loginfo("[SCRIPT PICK_B SHUTDOWN]")
+                rospy.sleep(3)
+                break
+
+            # roslaunch PICK_C
+            while (self.pickC == True and self.pickC_in == False):
+                self.pickC_in = True
+                self.pickC = False
+                self.await_ = False
+                self.PICK_C.start()
+                rospy.loginfo("[SCRIPT PICK_C SUCCESS]")
+                rospy.sleep(3)
+                break
+            while (self.pickC == False and self.pickC_in == True):
+                self.pickC_in = False
+                self.await_ = True
+                # self.mission = "waiting_FOR_JOB"
+                self.PICK_C.shutdown()
+                rospy.loginfo("[SCRIPT PICK_C SHUTDOWN]")
+                rospy.sleep(3)
+                break
+
+            # roslaunch ENTRY
+            while (self.entry == True and self.entry_in == False):
+                self.entry_in = True
+                self.entry = False
+                self.await_ = False
+                self.ENTRY.start()
+                rospy.loginfo("[SCRIPT ENTRY SUCCESS]")
+                rospy.sleep(3)
+                break
+            while (self.entry == False and self.entry_in == True):
+                self.entry_in = False
+                self.await_ = True
+                # self.mission.ENTRY = "waiting_FOR_JOB"
+                self.ENTRY.shutdown()
+                rospy.loginfo("[SCRIPT ENTRY SHUTDOWN]")
+                rospy.sleep(3)
+                break
+
+            # roslaunch RELEASE
+            while (self.release == True and self.release_in == False):
+                self.release_in = True
+                self.release = False
+                self.await_ = False
+                self.RELEASE.start()
+                rospy.loginfo("[SCRIPT RELEASE SUCCESS]")
+                rospy.sleep(3)
+                break
+            while (self.release == False and self.release_in == True):
+                self.release_in = False
+                self.await_ = True
+                # self.mission.ENTRY = "waiting_FOR_JOB"
+                self.RELEASE.shutdown()
+                rospy.loginfo("[SCRIPT RELEASE SHUTDOWN]")
+                rospy.sleep(3)
+                break
+
+    def update_state(self):
+        # # STATE ROBOT Session
+        self.state.AWAIT = self.await_
+        self.state.DRIVING = self.driving
+        self.state.EMER_STOP = self.emer
+
+        # rospy.loginfo("update_state")
+        rospy.loginfo(self.sw_green)
+        # self.pub_io.publish(self.io_msg)
+        self.SW_Green_cb()
+        self.SW_Orange_cb()
+        self.Emer_cb()
+        self.pub_state.publish(self.state)
+        self.launch_files()
+        
+
+if __name__ == '__main__':
+    try:
+        rospy.loginfo("Publishing data from arduino..")
+        nh = ARDUINO_IO()
+        rospy.spin()
+    except rospy.ROSInterruptException:
+        pass
